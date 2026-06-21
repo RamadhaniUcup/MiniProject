@@ -423,6 +423,41 @@ def predict():
 
 
 
+
+@app.delete("/history/<int:item_id>")
+def delete_history_item(item_id: int):
+    item = db.session.get(ScanHistory, item_id)
+
+    if item is None:
+        return jsonify({"error": "Riwayat scan tidak ditemukan."}), 404
+
+    if item.image_filename:
+        image_path = UPLOAD_DIR / item.image_filename
+        if image_path.exists():
+            image_path.unlink()
+
+    db.session.delete(item)
+    db.session.commit()
+
+    return jsonify({"message": "Riwayat scan berhasil dihapus."})
+
+
+@app.delete("/history")
+def clear_history():
+    histories = ScanHistory.query.all()
+
+    for item in histories:
+        if item.image_filename:
+            image_path = UPLOAD_DIR / item.image_filename
+            if image_path.exists():
+                image_path.unlink()
+
+    ScanHistory.query.delete()
+    db.session.commit()
+
+    return jsonify({"message": "Semua riwayat scan berhasil dihapus."})
+
+
 @app.get("/history")
 def history():
     histories = ScanHistory.query.order_by(ScanHistory.created_at.desc()).all()

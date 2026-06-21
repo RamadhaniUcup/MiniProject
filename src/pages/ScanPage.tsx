@@ -2,11 +2,18 @@ import { ChangeEvent, useEffect, useRef, useState } from "react";
 import type { ScanResult } from "../types/batik";
 
 const API_URL = "http://127.0.0.1:5000/predict";
+const HISTORY_URL = "http://127.0.0.1:5000/history";
 const JAVANESE_BATIK = "\uA9A7\uA9A0\uA9B6\uA98F\uA9C0";
 const JAVANESE_JAWA = "\uA997\uA9AE";
 const JAVANESE_NUSANTARA = "\uA9A4\uA9B8\uA9B1\uA9A4\uA9C0\uA9A0\uA9AB";
 
 type ScanMode = "upload" | "camera";
+
+type ScanHistoryItem = ScanResult & {
+  id: number;
+  imageFilename: string | null;
+  createdAt: string | null;
+};
 
 function isScanResult(value: unknown): value is ScanResult {
   if (!value || typeof value !== "object") {
@@ -21,6 +28,47 @@ function isScanResult(value: unknown): value is ScanResult {
     typeof candidate.philosophy === "string" &&
     typeof candidate.confidence === "number"
   );
+}
+
+function isScanHistoryList(value: unknown): value is ScanHistoryItem[] {
+  if (!Array.isArray(value)) {
+    return false;
+  }
+
+  return value.every((item) => {
+    if (!item || typeof item !== "object") {
+      return false;
+    }
+
+    const candidate = item as Partial<ScanHistoryItem>;
+    return (
+      typeof candidate.id === "number" &&
+      typeof candidate.classKey === "string" &&
+      typeof candidate.title === "string" &&
+      typeof candidate.origin === "string" &&
+      typeof candidate.philosophy === "string" &&
+      typeof candidate.confidence === "number"
+    );
+  });
+}
+
+function formatHistoryDate(value: string | null): string {
+  if (!value) {
+    return "Baru saja";
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "Baru saja";
+  }
+
+  return new Intl.DateTimeFormat("id-ID", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
 }
 
 async function canvasToFile(canvas: HTMLCanvasElement, filename: string): Promise<File> {
@@ -45,9 +93,32 @@ export default function ScanPage() {
   const [errorMessage, setErrorMessage] = useState<string>("");
   const [isLoading, setIsLoading] = useState(false);
   const [isCameraActive, setIsCameraActive] = useState(false);
+  const [history, setHistory] = useState<ScanHistoryItem[]>([]);
+  const [isHistoryLoading, setIsHistoryLoading] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+
+  async function fetchHistory() {
+    setIsHistoryLoading(true);
+
+    try {
+      const response = await fetch(HISTORY_URL);
+      const payload = (await response.json().catch(() => null)) as unknown;
+
+      if (response.ok && isScanHistoryList(payload)) {
+        setHistory(payload.slice(0, 5));
+      }
+    } catch {
+      // Riwayat hanya fitur pendukung. Jika backend belum siap, fitur scan tetap bisa berjalan.
+    } finally {
+      setIsHistoryLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void fetchHistory();
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -170,6 +241,7 @@ export default function ScanPage() {
       }
 
       setResult(payload);
+      void fetchHistory();
     } catch (error) {
       const message = error instanceof Error ? error.message : "Terjadi kesalahan saat memindai gambar.";
       setErrorMessage(
@@ -378,6 +450,57 @@ export default function ScanPage() {
                 </div>
               </div>
             )}
+
+            <div className="mt-6 border-t border-soga-200 pt-5">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-xs font-black uppercase tracking-[0.18em] text-heritage-gold">
+                    Database Scan
+                  </p>
+                  <h3 className="mt-1 font-display text-2xl font-bold text-heritage-ink">
+                    Riwayat Scan Terakhir
+                  </h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void fetchHistory()}
+                  className="inline-flex min-h-10 items-center justify-center rounded-md border border-soga-200 bg-white px-4 text-xs font-black uppercase tracking-[0.12em] text-heritage-maroon transition hover:bg-soga-50"
+                >
+                  {isHistoryLoading ? "Memuat..." : "Refresh"}
+                </button>
+              </div>
+
+              {history.length > 0 ? (
+                <div className="mt-4 space-y-3">
+                  {history.map((item) => (
+                    <article
+                      key={item.id}
+                      className="rounded-lg border border-soga-100 bg-soga-50/80 p-4 transition hover:-translate-y-0.5 hover:bg-white"
+                    >
+                      <div className="flex items-start justify-between gap-4">
+                        <div>
+                          <p className="font-display text-xl font-bold text-heritage-ink">{item.title}</p>
+                          <p className="mt-1 text-sm font-semibold text-soga-700">{item.origin}</p>
+                        </div>
+                        <span className="rounded-full bg-heritage-maroon px-3 py-1 text-xs font-black text-heritage-ivory">
+                          {item.confidence.toFixed(1)}%
+                        </span>
+                      </div>
+                      <p className="mt-3 text-sm leading-6 text-soga-700">{item.philosophy}</p>
+                      <div className="mt-3 flex flex-col gap-1 text-xs font-semibold text-soga-500 sm:flex-row sm:items-center sm:justify-between">
+                        <span>{formatHistoryDate(item.createdAt)}</span>
+                        {item.imageFilename ? <span>{item.imageFilename}</span> : null}
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              ) : (
+                <div className="mt-4 rounded-lg border border-dashed border-soga-300 bg-soga-50 p-5 text-sm leading-6 text-soga-700">
+                  Belum ada riwayat scan. Setelah gambar berhasil dipindai, data dari database akan muncul di sini.
+                </div>
+              )}
+            </div>
+
           </aside>
         </div>
       </section>
