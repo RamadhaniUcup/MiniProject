@@ -1,0 +1,11 @@
+node_modules/
+dist/
+vite-dev*.log
+
+backend/__pycache__/
+backend/*.keras
+.venv/
+venv/
+
+.DS_Store
+Thumbs.db
