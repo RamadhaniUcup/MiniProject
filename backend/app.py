@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import random
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 from flask import Flask, jsonify, request
 from flask_cors import CORS
+from flask_sqlalchemy import SQLAlchemy
 from PIL import Image
+from werkzeug.utils import secure_filename
 
 try:
     import tensorflow as tf
@@ -267,6 +270,61 @@ model = load_batik_model()
 app = Flask(__name__)
 CORS(app)
 
+UPLOAD_DIR = BASE_DIR / "uploads"
+UPLOAD_DIR.mkdir(exist_ok=True)
+
+DATABASE_PATH = BASE_DIR / "batikvision.db"
+app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{DATABASE_PATH.as_posix()}"
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+
+db = SQLAlchemy(app)
+
+
+class ScanHistory(db.Model):
+    __tablename__ = "scan_history"
+
+    id = db.Column(db.Integer, primary_key=True)
+    class_key = db.Column(db.String(100), nullable=False)
+    title = db.Column(db.String(100), nullable=False)
+    origin = db.Column(db.String(150), nullable=False)
+    philosophy = db.Column(db.Text, nullable=False)
+    confidence = db.Column(db.Float, nullable=False)
+    image_filename = db.Column(db.String(255), nullable=True)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+
+    def to_dict(self) -> dict[str, str | float | int | None]:
+        return {
+            "id": self.id,
+            "classKey": self.class_key,
+            "title": self.title,
+            "origin": self.origin,
+            "philosophy": self.philosophy,
+            "confidence": self.confidence,
+            "imageFilename": self.image_filename,
+            "createdAt": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+with app.app_context():
+    db.create_all()
+
+
+
+def save_uploaded_file(uploaded_file) -> tuple[Path | None, str | None]:
+    safe_name = secure_filename(uploaded_file.filename or "")
+
+    if not safe_name:
+        return None, None
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
+    saved_filename = f"{timestamp}_{safe_name}"
+    saved_path = UPLOAD_DIR / saved_filename
+
+    uploaded_file.seek(0)
+    uploaded_file.save(saved_path)
+
+    return saved_path, saved_filename
+
 
 def preprocess_image(image: Image.Image) -> np.ndarray:
     image = image.convert("RGB")
@@ -330,16 +388,45 @@ def predict():
         return jsonify({"error": "Nama file kosong. Pilih gambar batik terlebih dahulu."}), 400
 
     try:
-        image = Image.open(uploaded_file.stream)
+        saved_path, saved_filename = save_uploaded_file(uploaded_file)
+
+        if saved_path is None:
+            image = Image.open(uploaded_file.stream)
+        else:
+            image = Image.open(saved_path)
+
         batch = preprocess_image(image)
         predictions = np.asarray(model.predict(batch, verbose=0))
         scores = predictions[0] if predictions.ndim > 1 else predictions
         class_index = int(np.argmax(scores))
         confidence = float(np.max(scores) * 100.0)
         class_key = CLASS_NAMES[class_index] if 0 <= class_index < len(CLASS_NAMES) else "unknown"
-        return jsonify(build_response(class_key, confidence))
+
+        response_data = build_response(class_key, confidence)
+
+        scan_history = ScanHistory(
+            class_key=str(response_data["classKey"]),
+            title=str(response_data["title"]),
+            origin=str(response_data["origin"]),
+            philosophy=str(response_data["philosophy"]),
+            confidence=float(response_data["confidence"]),
+            image_filename=saved_filename,
+        )
+
+        db.session.add(scan_history)
+        db.session.commit()
+
+        return jsonify(response_data)
     except Exception as exc:
+        db.session.rollback()
         return jsonify({"error": f"Gagal memproses gambar: {exc}"}), 500
+
+
+
+@app.get("/history")
+def history():
+    histories = ScanHistory.query.order_by(ScanHistory.created_at.desc()).all()
+    return jsonify([item.to_dict() for item in histories])
 
 
 if __name__ == "__main__":
